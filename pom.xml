@@ -21,6 +21,14 @@
       <artifactId>com.ibm.wala.core</artifactId>
       <version>${wala.version}</version>
     </dependency>
+    <!-- For the Surefire instrumentation agent's JUnit Platform TestExecutionListener. Provided:
+         the target test JVM already has junit-platform-launcher on its classpath at runtime. -->
+    <dependency>
+      <groupId>org.junit.platform</groupId>
+      <artifactId>junit-platform-launcher</artifactId>
+      <version>1.9.3</version>
+      <scope>provided</scope>
+    </dependency>
   </dependencies>
 
   <build>
@@ -48,6 +56,37 @@
                 </transformer>
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
               </transformers>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <!-- Slim instrumentation agent jar (csto2-agent.jar): a -javaagent injected into the Surefire
+           fork that registers a JUnit TestExecutionListener (per-class MXBean/JFR facts). Excludes
+           WALA/optimize; just the agent + JfrProbe + Json + the listener service file. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <version>3.4.1</version>
+        <executions>
+          <execution>
+            <id>agent</id>
+            <phase>package</phase>
+            <goals><goal>jar</goal></goals>
+            <configuration>
+              <classifier>agent</classifier>
+              <includes>
+                <include>com/csto2/agent/**</include>
+                <include>com/csto2/trace/JfrProbe*.class</include>
+                <include>com/csto2/util/Json*.class</include>
+                <include>META-INF/services/**</include>
+              </includes>
+              <archive>
+                <manifest><addDefaultImplementationEntries>false</addDefaultImplementationEntries></manifest>
+                <manifestEntries>
+                  <Premain-Class>com.csto2.agent.Csto2Agent</Premain-Class>
+                  <Can-Retransform-Classes>false</Can-Retransform-Classes>
+                </manifestEntries>
+              </archive>
             </configuration>
           </execution>
         </executions>

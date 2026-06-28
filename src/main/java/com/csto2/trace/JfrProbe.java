@@ -43,7 +43,7 @@ public final class JfrProbe {
     private final List<Window> windows = new ArrayList<>();
 
     /** A test's wall-clock execution window; JFR event timestamps are binned into these. */
-    static final class Window {
+    public static final class Window {
         final String test; final int pos; final Instant start; Instant end;
         Window(String test, int pos, Instant start) { this.test = test; this.pos = pos; this.start = start; }
     }
@@ -51,7 +51,7 @@ public final class JfrProbe {
     private JfrProbe(Recording recording) { this.recording = recording; }
 
     /** Start recording the mechanisms; returns null (probe disabled) if JFR is unavailable. */
-    static JfrProbe start() {
+    public static JfrProbe start() {
         try {
             Recording r = new Recording();
             r.enable("jdk.GarbageCollection").withoutThreshold();
@@ -68,11 +68,11 @@ public final class JfrProbe {
         }
     }
 
-    Window begin(String test, int pos) { Window w = new Window(test, pos, Instant.now()); windows.add(w); return w; }
-    void end(Window w) { if (w != null) w.end = Instant.now(); }
+    public Window begin(String test, int pos) { Window w = new Window(test, pos, Instant.now()); windows.add(w); return w; }
+    public void end(Window w) { if (w != null) w.end = Instant.now(); }
 
     /** Stop, dump, and attribute events to per-test windows; write one facts row per test. */
-    void finishAndWrite(Path jfrFile, Path factsOut, String orderId) {
+    public void finishAndWrite(Path jfrFile, Path factsOut, String orderId) {
         try {
             recording.stop();
             if (jfrFile.getParent() != null) Files.createDirectories(jfrFile.getParent());

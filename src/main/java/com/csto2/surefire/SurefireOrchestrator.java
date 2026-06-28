@@ -42,6 +42,7 @@ public final class SurefireOrchestrator implements OrderRunner {
     private final Path extJar;      // surefire-changing-maven-extension jar (loaded via -Dmaven.ext.class.path)
     private final String mvnBin;
     private String kpArgline;       // prepended to the fork argLine (e.g. -javaagent + JFR); null = none
+    private Path agentJar;          // csto2 instrumentation agent; null = Tier-1 (runtime+status only)
     private final List<String> extraProps = new ArrayList<>();
 
     public SurefireOrchestrator(Path moduleDir, Path outDir, Path extJar, String mvnBin) {
@@ -52,6 +53,8 @@ public final class SurefireOrchestrator implements OrderRunner {
     }
 
     public void setKpArgline(String argline) { this.kpArgline = argline; }
+    /** Enable per-class instrumentation (alloc/jit/gc/JFR) by injecting this agent into the fork. */
+    public void setAgent(Path agentJar) { this.agentJar = agentJar == null ? null : agentJar.toAbsolutePath(); }
     /** Extra -Dkey=value props passed to every mvn invocation. */
     public void addProp(String kv) { extraProps.add(kv); }
 
@@ -89,16 +92,29 @@ public final class SurefireOrchestrator implements OrderRunner {
         cmd.add("-Dmaven.test.failure.ignore=true");    // a red test must not abort the run; we read reports
         for (String p : extraProps) cmd.add(p);
 
+        String safe = orderId.replace('#', '_').replace('/', '_');
+        Path agentFacts = null;
+        String argline = kpArgline;
+        if (agentJar != null) {
+            agentFacts = outDir.resolve("agent").resolve(safe + ".facts.jsonl").toAbsolutePath();
+            Files.createDirectories(agentFacts.getParent());
+            Path jfrOut = outDir.resolve("jfr").toAbsolutePath();
+            Files.createDirectories(jfrOut);
+            String inj = "-javaagent:" + agentJar + "=out=" + agentFacts + ",order=" + orderId + ",jfr=" + jfrOut;
+            argline = (argline == null || argline.isBlank()) ? inj : inj + " " + argline;
+        }
+
         ProcessBuilder pb = new ProcessBuilder(cmd).directory(moduleDir.toFile());
-        if (kpArgline != null && !kpArgline.isBlank()) pb.environment().put("KP_ARGLINE", kpArgline);
+        if (argline != null && !argline.isBlank()) pb.environment().put("KP_ARGLINE", argline);
         Path logDir = outDir.resolve("logs");
         Files.createDirectories(logDir);
         pb.redirectErrorStream(true);
-        pb.redirectOutput(logDir.resolve(orderId.replace('#', '_').replace('/', '_') + ".log").toFile());
+        pb.redirectOutput(logDir.resolve(safe + ".log").toFile());
         int code = pb.start().waitFor();
 
         Map<String, Integer> position = readPositions(orderFile);
         List<Map<String, Object>> rows = parseReports(reportsDir, orderId, position);
+        if (agentFacts != null) mergeAgentFacts(rows, agentFacts);
         if (traceOut.getParent() != null) Files.createDirectories(traceOut.getParent());
         StringBuilder sb = new StringBuilder();
         for (Map<String, Object> r : rows) sb.append(Json.write(r)).append('\n');
@@ -154,6 +170,42 @@ public final class SurefireOrchestrator implements OrderRunner {
         }
         rows.sort((a, b) -> Integer.compare((int) a.get("position"), (int) b.get("position")));
         return rows;
+    }
+
+    /** Merge the agent's per-class facts (alloc/jit/gc/classload/thread) into the report rows by class name. */
+    private static void mergeAgentFacts(List<Map<String, Object>> rows, Path agentFacts) {
+        if (!Files.exists(agentFacts)) return;
+        Map<String, String> byClass = new LinkedHashMap<>();
+        try { for (String l : Files.readAllLines(agentFacts)) { String t = jsonStr(l, "test"); if (t != null) byClass.put(t, l); } }
+        catch (Exception e) { return; }
+        String[] keys = {"classesLoaded", "jitMs", "gcCount", "gcMs", "allocBytes", "threadDelta"};
+        for (Map<String, Object> row : rows) {
+            String line = byClass.get((String) row.get("test"));
+            if (line == null) continue;
+            for (String k : keys) {
+                Double v = jsonNum(line, k);
+                if (v != null) row.put(k, v == Math.floor(v) ? (Object) (long) (double) v : v);
+            }
+        }
+    }
+
+    private static String jsonStr(String json, String key) {
+        String needle = "\"" + key + "\":\"";
+        int i = json.indexOf(needle);
+        if (i < 0) return null;
+        i += needle.length();
+        int j = json.indexOf('"', i);
+        return j < 0 ? null : json.substring(i, j);
+    }
+
+    private static Double jsonNum(String json, String key) {
+        String needle = "\"" + key + "\":";
+        int i = json.indexOf(needle);
+        if (i < 0) return null;
+        i += needle.length();
+        int j = i;
+        while (j < json.length() && "+-0123456789.eE".indexOf(json.charAt(j)) >= 0) j++;
+        try { return Double.parseDouble(json.substring(i, j)); } catch (RuntimeException e) { return null; }
     }
 
     private static double parseD(String s) {

@@ -81,6 +81,15 @@ public final class Csto2 {
             Path moduleDir = workDir != null ? workDir : Paths.get("").toAbsolutePath();
             SurefireOrchestrator s = new SurefireOrchestrator(moduleDir, outDir, ext, surefireMvnBin(a, moduleDir));
             if (a.containsKey("kp-argline")) s.setKpArgline(a.get("kp-argline"));
+            // Per-class instrumentation agent: explicit --agent, else csto2-agent.jar beside csto2.jar.
+            Path agent = a.containsKey("agent") ? Paths.get(a.get("agent"))
+                    : (self.getParent() == null ? null : self.getParent().resolve("csto2-agent.jar"));
+            if (agent != null && Files.exists(agent) && !"none".equals(a.get("agent"))) {
+                s.setAgent(agent);
+                System.err.println("[csto2] surefire instrumentation agent: " + agent);
+            } else {
+                System.err.println("[csto2] no instrumentation agent (runtime+status only); build csto2-agent.jar or pass --agent");
+            }
             return s;
         }
         TraceOrchestrator t = new TraceOrchestrator(cp, outDir, self, jvmArgs(a), javaBin(a));
