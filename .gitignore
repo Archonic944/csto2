@@ -1,0 +1,6 @@
+target/
+.csto2/
+.claude/
+*.class
+*.order
+deps.classpath
