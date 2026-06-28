@@ -10,7 +10,7 @@ import java.util.List;
 import java.util.Random;
 
 /** Generates orders and runs {@link TraceRunner} once per order, each in a fresh JVM. */
-public final class TraceOrchestrator {
+public final class TraceOrchestrator implements OrderRunner {
 
     private final String classpath; // full target test/runtime classpath
     private final Path outDir;

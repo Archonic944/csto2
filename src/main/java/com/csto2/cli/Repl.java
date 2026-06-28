@@ -50,6 +50,8 @@ public final class Repl {
         {"orders", "trace: number of orders to run (default 6)"},
         {"seed", "trace: shuffle seed (default 1)"},
         {"repeats", "measurement rounds for select/validate/pairwise (lower = faster, noisier; select default 4)"},
+        {"surefire-ext", "path to surefire-changing-maven-extension jar => measure via REAL Surefire (recommended)"},
+        {"mvn", "mvn binary/wrapper for the Surefire runner (optional; default ./mvnw or mvn)"},
     };
 
     public void run() throws Exception {
@@ -144,7 +146,7 @@ public final class Repl {
         require("cp"); require("tests");
         Path outDir = baseDir().resolve("trace");
         Path traceJsonl = outDir.resolve("trace.jsonl");
-        Map<String, String> a = args("cp", "jvmargs", "java", "workdir", "orders", "seed");
+        Map<String, String> a = args("cp", "jvmargs", "java", "workdir", "orders", "seed", "surefire-ext", "mvn", "kp-argline");
         a.put("tests", cfg.get("tests"));
         a.put("out", outDir.toString());
         if (!"n".equalsIgnoreCase(cfg.getOrDefault("jfr", "y"))) a.put("jfr", "1");
@@ -163,7 +165,7 @@ public final class Repl {
 
     private void select() throws Exception {
         require("cp"); require("tests"); requireFile("trace");
-        Map<String, String> a = args("cp", "trace", "jfr-dir", "jvmargs", "java", "workdir", "repeats");
+        Map<String, String> a = args("cp", "trace", "jfr-dir", "jvmargs", "java", "workdir", "repeats", "surefire-ext", "mvn", "kp-argline");
         a.put("tests", cfg.get("tests"));
         a.put("out", baseDir().resolve("select").toString());
         Csto2.dispatch("select", a);
@@ -171,7 +173,7 @@ public final class Repl {
 
     private void validate() throws Exception {
         require("cp"); require("tests"); requireFile("trace");
-        Map<String, String> a = args("cp", "trace", "jvmargs", "java", "workdir", "repeats");
+        Map<String, String> a = args("cp", "trace", "jvmargs", "java", "workdir", "repeats", "surefire-ext", "mvn", "kp-argline");
         a.put("tests", cfg.get("tests"));
         a.put("out", baseDir().resolve("validate").toString());
         Csto2.dispatch("validate", a);
@@ -179,7 +181,7 @@ public final class Repl {
 
     private void pairwise() throws Exception {
         require("cp"); requireFile("trace"); requireFile("facts");
-        Map<String, String> a = args("cp", "trace", "facts", "jvmargs", "java", "workdir", "repeats");
+        Map<String, String> a = args("cp", "trace", "facts", "jvmargs", "java", "workdir", "repeats", "surefire-ext", "mvn", "kp-argline");
         a.put("out", baseDir().resolve("pairwise").toString());
         Csto2.dispatch("pairwise", a);
     }

@@ -6,7 +6,9 @@ import com.csto2.optimize.Candidates;
 import com.csto2.optimize.JfrClassifier;
 import com.csto2.optimize.OrderOptimizer;
 import com.csto2.optimize.Pairwise;
+import com.csto2.trace.OrderRunner;
 import com.csto2.trace.TraceOrchestrator;
+import com.csto2.surefire.SurefireOrchestrator;
 
 import java.io.File;
 import java.nio.file.Files;
@@ -66,6 +68,35 @@ public final class Csto2 {
         if (code != 0) throw new IllegalStateException("discover failed with exit " + code);
     }
 
+    /**
+     * Build the order runner the pipeline measures with. Default backend is REAL Surefire (the fork's
+     * testorder mode) when {@code --surefire-ext} is provided; otherwise the legacy in-JVM TraceRunner.
+     * Both implement {@link OrderRunner} so trace/select/validate/pairwise are backend-agnostic.
+     */
+    private static OrderRunner makeRunner(Map<String, String> a, String cp, Path outDir, Path self) throws Exception {
+        Path workDir = resolveWorkDir(a, cp);
+        String runner = a.getOrDefault("runner", a.containsKey("surefire-ext") ? "surefire" : "trace");
+        if ("surefire".equals(runner)) {
+            Path ext = Paths.get(req(a, "surefire-ext"));
+            Path moduleDir = workDir != null ? workDir : Paths.get("").toAbsolutePath();
+            SurefireOrchestrator s = new SurefireOrchestrator(moduleDir, outDir, ext, surefireMvnBin(a, moduleDir));
+            if (a.containsKey("kp-argline")) s.setKpArgline(a.get("kp-argline"));
+            return s;
+        }
+        TraceOrchestrator t = new TraceOrchestrator(cp, outDir, self, jvmArgs(a), javaBin(a));
+        t.setClassTimeoutMs(Long.parseLong(a.getOrDefault("class-timeout-ms", "30000")));
+        t.setWorkDir(workDir);
+        if (a.containsKey("jfr")) t.setJfrDir(outDir.resolve("jfr"));
+        return t;
+    }
+
+    private static String surefireMvnBin(Map<String, String> a, Path dir) {
+        String m = a.get("mvn");
+        if (m != null && !m.isBlank()) return m;
+        Path w = dir.resolve("mvnw");
+        return Files.isExecutable(w) ? w.toAbsolutePath().toString() : "mvn";
+    }
+
     private static void trace(Map<String, String> a) throws Exception {
         String cp = filterClasspath(req(a, "cp"));
         Path testsFile = Paths.get(req(a, "tests"));
@@ -76,10 +107,7 @@ public final class Csto2 {
         Path self = Paths.get(Csto2.class.getProtectionDomain().getCodeSource().getLocation().toURI());
 
         long t0 = System.nanoTime();
-        TraceOrchestrator orch = new TraceOrchestrator(cp, outDir, self, jvmArgs(a), javaBin(a));
-        orch.setClassTimeoutMs(Long.parseLong(a.getOrDefault("class-timeout-ms", "30000")));
-        orch.setWorkDir(resolveWorkDir(a, cp));
-        if (a.containsKey("jfr")) orch.setJfrDir(outDir.resolve("jfr"));
+        OrderRunner orch = makeRunner(a, cp, outDir, self);
         Path traceOut = orch.run(tests, orders, seed);
         System.err.printf("[csto2] traced %d orders in %.1fs -> %s%n", orders, (System.nanoTime() - t0) / 1e9, traceOut);
     }
@@ -108,9 +136,7 @@ public final class Csto2 {
 
         Path measure = outDir.resolve("measure.jsonl");
         Files.deleteIfExists(measure);
-        TraceOrchestrator orch = new TraceOrchestrator(cp, outDir, self, jvmArgs(a), javaBin(a));
-        orch.setClassTimeoutMs(Long.parseLong(a.getOrDefault("class-timeout-ms", "30000")));
-        orch.setWorkDir(resolveWorkDir(a, cp));
+        OrderRunner orch = makeRunner(a, cp, outDir, self);
         // Interleave repeats to spread background-load noise evenly across both orders.
         for (int r = 0; r < repeats; r++) {
             orch.runOrder(initialFile, "initial#" + r, measure);
@@ -141,9 +167,7 @@ public final class Csto2 {
         Map<String, Candidates.Stat> stats = Candidates.stats(tracePath);
         Map<String, List<String>> cands = Candidates.generate(tests, stats, tracePath, heavyAllocMB, coldSlope, maxResid);
 
-        TraceOrchestrator orch = new TraceOrchestrator(cp, outDir, self, jvmArgs(a), javaBin(a));
-        orch.setClassTimeoutMs(Long.parseLong(a.getOrDefault("class-timeout-ms", "30000")));
-        orch.setWorkDir(resolveWorkDir(a, cp));
+        OrderRunner orch = makeRunner(a, cp, outDir, self);
 
         // Producer->consumer cache-warming candidate: trace-mine pairs (allocation-shed fingerprint),
         // then CAUSALLY CONFIRM each with a 2-class probe before trusting it. Applied as a minimal
@@ -279,9 +303,7 @@ public final class Csto2 {
         Map<String, java.util.Set<String>> reads = Pairwise.staticReads(factsPath);
         reads.keySet().retainAll(stable); // only probe stable producers
 
-        TraceOrchestrator orch = new TraceOrchestrator(cp, outDir, self, jvmArgs(a), javaBin(a));
-        orch.setClassTimeoutMs(Long.parseLong(a.getOrDefault("class-timeout-ms", "30000")));
-        orch.setWorkDir(resolveWorkDir(a, cp));
+        OrderRunner orch = makeRunner(a, cp, outDir, self);
         System.err.println("[csto2] probing pairs for " + sens.size() + " sensitive consumers...");
         List<Pairwise.Pair> pairs = Pairwise.probe(orch, outDir.resolve("probe.jsonl"),
                 sens, reads, 20.0, 0.15, 4);

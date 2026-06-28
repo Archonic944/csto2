@@ -1,6 +1,6 @@
 package com.csto2.optimize;
 
-import com.csto2.trace.TraceOrchestrator;
+import com.csto2.trace.OrderRunner;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -319,7 +319,7 @@ public final class Candidates {
      * runs first. This rejects confounded pairs (a non-warmer leaves C's allocation unchanged) while
      * keeping genuine cache producers. Cheap: 2 short runs per candidate pair.
      */
-    public static List<PairSig> confirmPairs(TraceOrchestrator orch, Path probeDir, List<PairSig> raw,
+    public static List<PairSig> confirmPairs(OrderRunner orch, Path probeDir, List<PairSig> raw,
             double minDropFrac) throws Exception {
         Files.createDirectories(probeDir);
         Path probeOut = probeDir.resolve("probe.jsonl");
@@ -345,7 +345,7 @@ public final class Candidates {
     }
 
     /** Run [producer,consumer] (warm) or [consumer,producer] (cold) in a fresh JVM; return consumer [runtimeMs, allocMB]. */
-    private static double[] probeConsumer(TraceOrchestrator orch, Path probeDir, Path probeOut,
+    private static double[] probeConsumer(OrderRunner orch, Path probeDir, Path probeOut,
             String producer, String consumer, boolean warm) throws Exception {
         String id = (warm ? "warm_" : "cold_") + sanitize(producer) + "__" + sanitize(consumer);
         Path of = probeDir.resolve(id + ".order");

@@ -1,6 +1,6 @@
 package com.csto2.optimize;
 
-import com.csto2.trace.TraceOrchestrator;
+import com.csto2.trace.OrderRunner;
 import com.csto2.util.Json;
 
 import java.nio.charset.StandardCharsets;
@@ -95,7 +95,7 @@ public final class Pairwise {
     }
 
     /** Probe candidate pairs and return confirmed ones (benefit above thresholds). */
-    public static List<Pair> probe(TraceOrchestrator orch, Path probeOut,
+    public static List<Pair> probe(OrderRunner orch, Path probeOut,
                                    List<String> consumers, Map<String, Set<String>> reads,
                                    double minBenefitMs, double minFraction, int maxProducersPerConsumer) throws Exception {
         Files.deleteIfExists(probeOut);
@@ -134,7 +134,7 @@ public final class Pairwise {
     }
 
     /** Run [producer,consumer] (warm) or [consumer,producer] (cold) and return the consumer's runtime. */
-    private static double consumerCost(TraceOrchestrator orch, Path orderDir, Path probeOut,
+    private static double consumerCost(OrderRunner orch, Path orderDir, Path probeOut,
                                        String producer, String consumer, boolean warm) throws Exception {
         String id = (warm ? "warm_" : "cold_") + sanitize(producer) + "__" + sanitize(consumer);
         Path of = orderDir.resolve(id + ".order");
