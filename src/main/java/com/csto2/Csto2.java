@@ -7,7 +7,6 @@ import com.csto2.optimize.JfrClassifier;
 import com.csto2.optimize.OrderOptimizer;
 import com.csto2.optimize.Pairwise;
 import com.csto2.trace.OrderRunner;
-import com.csto2.trace.TraceOrchestrator;
 import com.csto2.surefire.SurefireOrchestrator;
 
 import java.io.File;
@@ -58,7 +57,7 @@ public final class Csto2 {
         cmd.add(javaBin(a));
         cmd.addAll(jvmArgs(a));
         cmd.add("-cp"); cmd.add(cp + File.pathSeparator + self.toAbsolutePath());
-        cmd.add("com.csto2.trace.TraceRunner");
+        cmd.add("com.csto2.trace.TestDiscovery");
         cmd.add("--discover"); cmd.add("--tests"); cmd.add(candidates.toString());
         cmd.add("--out"); cmd.add(out.toString());
         ProcessBuilder pb = new ProcessBuilder(cmd).inheritIO();
@@ -69,34 +68,31 @@ public final class Csto2 {
     }
 
     /**
-     * Build the order runner the pipeline measures with. Default backend is REAL Surefire (the fork's
-     * testorder mode) when {@code --surefire-ext} is provided; otherwise the legacy in-JVM TraceRunner.
-     * Both implement {@link OrderRunner} so trace/select/validate/pairwise are backend-agnostic.
+     * Build the order runner the pipeline measures with. All measurement runs through REAL Maven
+     * Surefire (the testorder fork) so timing + greenness match {@code mvn test}; {@code --surefire-ext}
+     * (the changing-maven-extension jar) is required. Per-class alloc/jit/gc/JFR come from the
+     * injected agent (csto2-agent.jar, auto-located beside csto2.jar). The old in-JVM TraceRunner
+     * backend has been retired — only its reflection-based discovery survives as {@code TestDiscovery}.
      */
     private static OrderRunner makeRunner(Map<String, String> a, String cp, Path outDir, Path self) throws Exception {
+        if (!a.containsKey("surefire-ext") || req(a, "surefire-ext").isBlank())
+            throw new IllegalArgumentException("Missing --surefire-ext: measurement runs through Maven Surefire "
+                    + "(the testorder fork). Pass the surefire-changing-maven-extension jar.");
         Path workDir = resolveWorkDir(a, cp);
-        String runner = a.getOrDefault("runner", a.containsKey("surefire-ext") ? "surefire" : "trace");
-        if ("surefire".equals(runner)) {
-            Path ext = Paths.get(req(a, "surefire-ext"));
-            Path moduleDir = workDir != null ? workDir : Paths.get("").toAbsolutePath();
-            SurefireOrchestrator s = new SurefireOrchestrator(moduleDir, outDir, ext, surefireMvnBin(a, moduleDir));
-            if (a.containsKey("kp-argline")) s.setKpArgline(a.get("kp-argline"));
-            // Per-class instrumentation agent: explicit --agent, else csto2-agent.jar beside csto2.jar.
-            Path agent = a.containsKey("agent") ? Paths.get(a.get("agent"))
-                    : (self.getParent() == null ? null : self.getParent().resolve("csto2-agent.jar"));
-            if (agent != null && Files.exists(agent) && !"none".equals(a.get("agent"))) {
-                s.setAgent(agent);
-                System.err.println("[csto2] surefire instrumentation agent: " + agent);
-            } else {
-                System.err.println("[csto2] no instrumentation agent (runtime+status only); build csto2-agent.jar or pass --agent");
-            }
-            return s;
+        Path ext = Paths.get(a.get("surefire-ext"));
+        Path moduleDir = workDir != null ? workDir : Paths.get("").toAbsolutePath();
+        SurefireOrchestrator s = new SurefireOrchestrator(moduleDir, outDir, ext, surefireMvnBin(a, moduleDir));
+        if (a.containsKey("kp-argline")) s.setKpArgline(a.get("kp-argline"));
+        // Per-class instrumentation agent: explicit --agent, else csto2-agent.jar beside csto2.jar.
+        Path agent = a.containsKey("agent") ? Paths.get(a.get("agent"))
+                : (self.getParent() == null ? null : self.getParent().resolve("csto2-agent.jar"));
+        if (agent != null && Files.exists(agent) && !"none".equals(a.get("agent"))) {
+            s.setAgent(agent);
+            System.err.println("[csto2] surefire instrumentation agent: " + agent);
+        } else {
+            System.err.println("[csto2] no instrumentation agent (runtime+status only); build csto2-agent.jar or pass --agent");
         }
-        TraceOrchestrator t = new TraceOrchestrator(cp, outDir, self, jvmArgs(a), javaBin(a));
-        t.setClassTimeoutMs(Long.parseLong(a.getOrDefault("class-timeout-ms", "30000")));
-        t.setWorkDir(workDir);
-        if (a.containsKey("jfr")) t.setJfrDir(outDir.resolve("jfr"));
-        return t;
+        return s;
     }
 
     private static String surefireMvnBin(Map<String, String> a, Path dir) {
