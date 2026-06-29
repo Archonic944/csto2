@@ -238,8 +238,8 @@ public final class Csto2 {
         String jfrDirArg = a.get("jfr-dir");
         Path jfrDir = jfrDirArg != null ? Paths.get(jfrDirArg) : tracePath.getParent().resolve("jfr");
         if (Files.isDirectory(jfrDir)) {
-            double minLoads = Double.parseDouble(a.getOrDefault("jfr-min-loads", "500"));
-            double minShare = Double.parseDouble(a.getOrDefault("jfr-min-share", "0.5"));
+            double minLoads = Double.parseDouble(a.getOrDefault("jfr-min-loads", "200"));
+            double minShare = Double.parseDouble(a.getOrDefault("jfr-min-share", "0.3"));
             Map<String, JfrClassifier.Facts> jf = JfrClassifier.analyze(jfrDir, minLoads, minShare);
             System.err.print(JfrClassifier.report(jf));
             long gcCarriers = jf.values().stream().filter(f -> "GC_CARRIER".equals(f.category)).count();

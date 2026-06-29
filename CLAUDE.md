@@ -116,6 +116,14 @@ pairwise) build their runner via `makeRunner`, which is **Surefire-only** and ne
 `--agent`). Common flags: `--cp` (target classpath; used to infer the module dir), `--tests <file>`,
 `--out <dir>`, `--workdir <module dir>`, `--mvn <bin>`.
 
+**Agent is for discovery, not for the ship decision.** `makeRunner(…, attachAgent)` takes a flag.
+Discovery phases (trace, JFR classification, producer→consumer pair confirmation) attach the agent —
+they *need* the per-class alloc/jit/gc/JFR facts. But the agent's JFR recording + listener add real
+overhead that perturbs wall-clock, so the final A/B **validation** of promising orders runs the agent
+*off* (`select`'s ship-gate measurement loop and `validate`'s interleaved repeats). Those phases only
+read `runtimeMs`/`status`, never agent facts, so dropping the agent gives a cleaner timing comparison
+without losing anything.
+
 1. **`analyze --app <cp> [--lib <cp>] --tests <file> [--out <dir>]`** — static pass → `static-facts.jsonl`
    + `static-edges.json`. (Uses `--app`/`--lib`, **not** `--cp`. In-process WALA, no Surefire.)
 2. **`discover --cp --tests --out`** — runs `TestDiscovery --discover` in the target JVM to filter a
@@ -221,7 +229,9 @@ no longer csto2's job. Remaining knobs:
 
 `select` thresholds: `--heavy-alloc-mb` (500), `--cold-slope` (-1.0), `--max-resid` (300),
 `--pair-consumer-mb` (1000), `--pair-producer-mb` (200), `--pair-drop-frac` (0.25), `--jfr-dir`,
-`--jfr-min-loads` (500), `--jfr-min-share` (0.5).
+`--jfr-min-loads` (200), `--jfr-min-share` (0.3). (These warmup thresholds are deliberately low — the
+green gate filters any over-eager candidate, so casting a wider net for shareable-warmup carriers only
+costs an extra candidate measurement, never a regression.)
 
 ## Methodology constraints (load-bearing — these are why the tool is shaped this way)
 
