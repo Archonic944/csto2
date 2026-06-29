@@ -75,6 +75,22 @@ public final class Csto2 {
      * backend has been retired — only its reflection-based discovery survives as {@code TestDiscovery}.
      */
     private static OrderRunner makeRunner(Map<String, String> a, String cp, Path outDir, Path self) throws Exception {
+        return makeRunner(a, cp, outDir, self, true);
+    }
+
+    /**
+     * Build the Surefire-backed runner.
+     *
+     * <p>{@code attachAgent} controls the per-class instrumentation agent. The agent (JFR +
+     * alloc/jit/gc deltas) is the engine of <b>discovery</b> — tracing, JFR mechanism classification,
+     * and producer→consumer pair confirmation all need it. But the agent's JFR recording and listener
+     * add real overhead that perturbs the very wall-clock we optimize, so the final A/B
+     * <b>validation</b> of promising orders (the {@code select} ship gate, {@code validate}) runs with
+     * {@code attachAgent=false} for clean timing — those phases only read runtime+status, never agent
+     * facts.
+     */
+    private static OrderRunner makeRunner(Map<String, String> a, String cp, Path outDir, Path self,
+                                          boolean attachAgent) throws Exception {
         Path ext = a.containsKey("surefire-ext") && !a.get("surefire-ext").isBlank()
                 ? Paths.get(a.get("surefire-ext")) : defaultSurefireExt();
         if (ext == null || !Files.exists(ext))
@@ -86,6 +102,10 @@ public final class Csto2 {
         Path moduleDir = workDir != null ? workDir : Paths.get("").toAbsolutePath();
         SurefireOrchestrator s = new SurefireOrchestrator(moduleDir, outDir, ext, surefireMvnBin(a, moduleDir));
         if (a.containsKey("kp-argline")) s.setKpArgline(a.get("kp-argline"));
+        if (!attachAgent) {
+            System.err.println("[csto2] measurement runner: no agent (clean wall-clock for A/B validation)");
+            return s;
+        }
         // Per-class instrumentation agent: explicit --agent, else csto2-agent.jar beside csto2.jar.
         Path agent = a.containsKey("agent") ? Paths.get(a.get("agent"))
                 : (self.getParent() == null ? null : self.getParent().resolve("csto2-agent.jar"));
@@ -155,7 +175,9 @@ public final class Csto2 {
 
         Path measure = outDir.resolve("measure.jsonl");
         Files.deleteIfExists(measure);
-        OrderRunner orch = makeRunner(a, cp, outDir, self);
+        // Validate promising orders with NO agent: the instrumentation/JFR overhead perturbs the
+        // wall-clock we are comparing. report() only reads runtimeMs, so agent facts aren't needed.
+        OrderRunner orch = makeRunner(a, cp, outDir, self, false);
         // Interleave repeats to spread background-load noise evenly across both orders.
         for (int r = 0; r < repeats; r++) {
             orch.runOrder(initialFile, "initial#" + r, measure);
@@ -186,7 +208,12 @@ public final class Csto2 {
         Map<String, Candidates.Stat> stats = Candidates.stats(tracePath);
         Map<String, List<String>> cands = Candidates.generate(tests, stats, tracePath, heavyAllocMB, coldSlope, maxResid);
 
-        OrderRunner orch = makeRunner(a, cp, outDir, self);
+        // Two runners, two roles. DISCOVERY (agent/JFR on): pair confirmation needs the agent's
+        // per-class allocation deltas to prove a producer warms a consumer. VALIDATION (agent off):
+        // the final candidate A/B is measured clean, since the agent's JFR/listener overhead would
+        // confound the wall-clock the ship gate decides on.
+        OrderRunner discover = makeRunner(a, cp, outDir, self, true);
+        OrderRunner validate = makeRunner(a, cp, outDir, self, false);
 
         // Producer->consumer cache-warming candidate: trace-mine pairs (allocation-shed fingerprint),
         // then CAUSALLY CONFIRM each with a 2-class probe before trusting it. Applied as a minimal
@@ -201,7 +228,7 @@ public final class Csto2 {
                     ps.producer.substring(ps.producer.lastIndexOf('.') + 1),
                     ps.consumer.substring(ps.consumer.lastIndexOf('.') + 1), ps.allocDropMB, ps.rtDropMs);
         List<Candidates.PairSig> confirmed = raw.isEmpty() ? raw
-                : Candidates.confirmPairs(orch, outDir.resolve("probe"), raw, pairDropFrac);
+                : Candidates.confirmPairs(discover, outDir.resolve("probe"), raw, pairDropFrac);
         if (!confirmed.isEmpty())
             cands.put("pairwise-warm", Candidates.applyPairsMinimal(tests, confirmed));
 
@@ -241,7 +268,7 @@ public final class Csto2 {
         for (int r = 0; r < repeats; r++) {
             java.util.Collections.shuffle(names, shufRnd);
             for (String name : names)
-                orch.runOrder(outDir.resolve(name + ".order"), name + "#" + r, measure);
+                validate.runOrder(outDir.resolve(name + ".order"), name + "#" + r, measure);
             System.err.println("[csto2] measured round " + (r + 1) + "/" + repeats);
         }
         selectReport(measure, "initial");
