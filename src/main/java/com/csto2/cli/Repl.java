@@ -50,7 +50,7 @@ public final class Repl {
         {"orders", "trace: number of orders to run (default 6)"},
         {"seed", "trace: shuffle seed (default 1)"},
         {"repeats", "measurement rounds for select/validate/pairwise (lower = faster, noisier; select default 4)"},
-        {"surefire-ext", "path to surefire-changing-maven-extension jar => measure via REAL Surefire (recommended)"},
+        {"surefire-ext", "testorder-fork extension jar (optional; auto-located from ~/.m2 when blank)"},
         {"mvn", "mvn binary/wrapper for the Surefire runner (optional; default ./mvnw or mvn)"},
     };
 
@@ -70,6 +70,7 @@ public final class Repl {
                 catch (Throwable t) { System.out.println("[project] autodetect failed: " + t); }
             }
         }
+        reportRunnerStatus();
         loop:
         while (true) {
             printMenu();
@@ -149,7 +150,6 @@ public final class Repl {
         Map<String, String> a = args("cp", "jvmargs", "java", "workdir", "orders", "seed", "surefire-ext", "mvn", "kp-argline");
         a.put("tests", cfg.get("tests"));
         a.put("out", outDir.toString());
-        if (!"n".equalsIgnoreCase(cfg.getOrDefault("jfr", "y"))) a.put("jfr", "1");
         Csto2.dispatch("trace", a);
         if (!Files.exists(traceJsonl)) {
             cfg.remove("trace");
@@ -314,17 +314,38 @@ public final class Repl {
     // ---- config / state --------------------------------------------------------------------------
 
     private void configure() throws Exception {
-        System.out.println("Set values (blank keeps current). 'jfr' y/n toggles JFR in trace.");
+        System.out.println("Set values (blank keeps current).");
         for (String[] k : CONFIG_KEYS) {
             String cur = cfg.get(k[0]);
             String shown = cur == null ? "<unset>" : cur;
-            String v = prompt(String.format("%-9s [%s]  (%s)", k[0], shown, k[1]));
+            String v = prompt(String.format("%-12s [%s]  (%s)", k[0], shown, k[1]));
             if (v == null) return;
             v = v.trim();
             if (!v.isEmpty()) cfg.put(k[0], v);
         }
-        String jfr = prompt("jfr       [" + cfg.getOrDefault("jfr", "y") + "]  (record JFR in trace? y/n)");
-        if (jfr != null && !jfr.isBlank()) cfg.put("jfr", jfr.trim());
+    }
+
+    /** Report whether the Surefire testorder fork + instrumentation agent are available for measurement. */
+    private void reportRunnerStatus() {
+        Path ext = cfg.containsKey("surefire-ext") ? Paths.get(cfg.get("surefire-ext")) : Csto2.defaultSurefireExt();
+        if (ext != null && Files.exists(ext)) {
+            System.out.println("[surefire] testorder fork: " + ext);
+        } else {
+            System.out.println("[surefire] NOT FOUND — measurement needs the testorder fork. Build & install it");
+            System.out.println("           (mvn install -DskipTests -Drat.skip -Denforcer.skip in the maven-surefire fork),");
+            System.out.println("           or set 'surefire-ext' via configure.");
+        }
+        Path agent = locateAgent();
+        System.out.println("[surefire] instrumentation agent: "
+                + (agent != null && Files.exists(agent) ? agent : "(missing — runtime+status only)"));
+    }
+
+    /** The csto2-agent.jar shipped next to the running csto2.jar. */
+    private Path locateAgent() {
+        try {
+            Path self = Paths.get(Repl.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+            return self.getParent() == null ? null : self.getParent().resolve("csto2-agent.jar");
+        } catch (Exception e) { return null; }
     }
 
     private void state() {
@@ -333,12 +354,12 @@ public final class Repl {
             String v = cfg.get(k[0]);
             if (v != null) System.out.printf("  %-9s = %s%n", k[0], v);
         }
-        System.out.printf("  %-9s = %s%n", "jfr", cfg.getOrDefault("jfr", "y"));
         System.out.println("--- wired artifacts ---");
         for (String k : new String[]{"facts", "trace", "jfr-dir"}) {
             if (cfg.containsKey(k)) System.out.printf("  %-9s = %s%n", k, cfg.get(k));
         }
         System.out.println("  base out  = " + baseDir());
+        reportRunnerStatus();
     }
 
     // ---- helpers ---------------------------------------------------------------------------------

@@ -33,14 +33,25 @@ alloc-sort gains ~+5% on alloc-bound jackson/paimon but loses ~-17% on locality-
 ## Build & run
 
 ```bash
-mvn -q package                       # -> target/csto2.jar (shaded, Main-Class: com.csto2.Csto2)
-java -jar target/csto2.jar <cmd> ...
+mvn -q package        # -> target/csto2.jar (shaded, Main-Class: com.csto2.Csto2)
+                      #    target/csto2-agent.jar (slim -javaagent, no WALA)
+java -jar target/csto2.jar          # interactive REPL (point it at a Maven module)
+java -jar target/csto2.jar <cmd> …  # single subcommand
 ```
 
-Java 17 source/target. Single runtime dependency: **WALA** (`com.ibm.wala.core` 1.7.2) for the
-static-analysis half. There is no unit-test suite here — validation is empirical, against the
-external target projects. `run-alloc-front.sh` is a scratch example of invoking `TraceRunner`
-directly with a chosen order file.
+Java 17 source/target. Compile deps: **WALA** (`com.ibm.wala.core` 1.7.2) for the static half, and
+`junit-platform-launcher` (provided) for the agent's listener. No unit-test suite here — validation
+is empirical, against the external target projects.
+
+**Prerequisite — the Surefire testorder fork.** All measurement runs through real Maven Surefire via
+the [TestingResearchIllinois/maven-surefire](https://github.com/TestingResearchIllinois/maven-surefire)
+fork (`modifiedRunOrder-ext` branch), which adds `-Dsurefire.runOrder=testorder` (run exactly the
+classes listed in `-Dtest`, in order). Build & install it once:
+`mvn install -DskipTests -Drat.skip -Denforcer.skip` in the fork. That installs `3.0.0-M8-SNAPSHOT`
+surefire + the `surefire-changing-maven-extension` jar into `~/.m2`; csto2 auto-locates the extension
+there (`Csto2.defaultSurefireExt`), loads it per-invocation via `-Dmaven.ext.class.path` (no global
+Maven mutation), and the extension forces single-fork (`forkMode=once`, carryover preserved) while
+keeping the project's own `argLine`/`systemPropertyVariables`.
 
 ## The two halves
 
@@ -64,47 +75,53 @@ measurements are ever trusted to ship an order.
   types). Ubiquitous test-infra namespaces (JUnit/Mockito/Hamcrest/…) are filtered out. Output:
   `static-edges.json`.
 
-### Dynamic half — `trace/`
+### Dynamic half — `surefire/` + `agent/` (was the in-JVM TraceRunner, now retired)
 
-- **`TraceRunner`** is the in-JVM workhorse. Given an order file, it runs each test class **in one
-  JVM, sequentially**, and at each class boundary records durable-state deltas from platform MXBeans:
-  runtime, `classesLoaded`, `jitMs` (total compilation time), `gcCount`/`gcMs`, `allocBytes`
-  (HotSpot per-thread allocated bytes), `threadDelta`, plus `testsFound`/`failures`/`status`. One
-  JSON row per class, **flushed immediately** (partial data survives a hang). Crucial behaviors:
-  - Each class runs on a **non-daemon worker thread with a wall-clock timeout** (`--class-timeout-ms`).
-    A hung test is parked (not killed) so it can't block the rest; `Runtime.halt(0)` at the end reaps
-    everything. Non-daemon + halt matches Maven Surefire fidelity (spawned threads inherit the daemon
-    flag; some tests assert on it).
-  - **Runner auto-selection**: JUnit Platform (JUnit 5) preferred, JUnit 4 (`JUnitCore`) fallback —
-    both invoked **reflectively** (no compile-time JUnit dependency), so it runs against whatever the
-    target has.
-  - `--discover` mode filters a candidate class list to real runnable tests (concrete + has an
-    `@Test`/`@RunWith`/TestNG marker, including inherited), mirroring what Surefire would run.
-  - `--explain <class>` prints per-test failures for one class (debugging aid).
-  - Optional `--jfr <dir>` attaches a `JfrProbe`.
-- **`JfrProbe`** records a timestamped JFR *event stream* (GC, ClassLoad, Compilation, allocation
-  samples) and **bins each event into the test that was running when it fired** (binary search over
-  per-test execution windows). This distinguishes mechanisms that MXBean counters confound: young vs
-  **old/full** GC (full GCs are the placement-sensitive expensive ones), and **unique first-loads**
-  (one-time cost) vs shared class loads. Output: `<order>.jfr.jsonl`, one facts row per test.
-- **`TraceOrchestrator`** generates orders and spawns `TraceRunner` **once per order in a fresh child
-  JVM**. Order 0 is `initial`/as-given; the rest are seeded shuffles. It sets the child JVM's
-  **working directory** to the target test module's basedir (inferred as the parent of
-  `target/test-classes`) so tests that resolve relative resource paths pass like Surefire does.
-  `runOrder()` re-runs a single named order, used heavily by the selection/probe phases.
+Measurement runs through **real Maven Surefire**, so timing and greenness match `mvn test`. (The
+former reflective in-JVM `TraceRunner` was retired — it ignored the project's Surefire-configured
+system properties/argLine, so e.g. Avro's serialization tests failed under it but pass under Surefire.)
+The two backends share the `OrderRunner` interface (`runOrder` / `run`).
+
+- **`SurefireOrchestrator`** (`com.csto2.surefire`) — runs each order with
+  `mvn surefire:test -Dmaven.ext.class.path=<ext> -Dsurefire.runOrder=testorder -Dtest=<orderfile>`
+  in the target **module dir** (so the project's own classpath/config apply). Per-class **runtime +
+  pass/fail** are parsed from Surefire's own XML reports (`target/surefire-reports/TEST-*.xml`);
+  position comes from the order file. It also injects the instrumentation agent and **merges** the
+  agent's per-class facts into the report rows by class name → the same `trace.jsonl` schema the
+  optimizer consumes.
+- **`agent/Csto2Agent` + `Csto2Listener`** (built as the slim `csto2-agent.jar`) — a `-javaagent`
+  injected into the Surefire fork via the extension's `KP_ARGLINE` env var. In `premain` it appends
+  its own jar to the system classloader (so the JUnit Platform ServiceLoader discovers the listener)
+  and starts JFR. The `TestExecutionListener` records, per top-level class (depth-counting collapses
+  `@Nested`), the durable-state deltas: `classesLoaded`, `jitMs`, `gcCount`/`gcMs`, `allocBytes`,
+  `threadDelta` — plus per-class JFR facts via `JfrProbe`. Works for JUnit 5 and JUnit 4-via-vintage.
+- **`JfrProbe`** (`com.csto2.trace`, reused by the agent) — records a timestamped JFR *event stream*
+  (GC, ClassLoad, Compilation, allocation samples) and **bins each event into the test running when it
+  fired** (binary search over per-class windows the listener marks). This distinguishes what MXBean
+  counters confound: young vs **old/full** GC (full GCs are placement-sensitive), and **unique
+  first-loads** vs shared class loads. Output: `jfr/<order>.jfr.jsonl`, one facts row per class.
+- **`TestDiscovery`** (`com.csto2.trace`) — the surviving piece of the old TraceRunner: reflection-only
+  class filtering (concrete + has an `@Test`/`@RunWith`/TestNG marker, inherited included). Never
+  executes tests, so no fidelity issue. Used by the `discover` command via `--discover` (and
+  `--explain <class>` as a failure-inspection aid).
+
+> **Caveats:** the agent's classpath-append relies on `useSystemClassLoader=true` (Surefire default).
+> `-Dtest` listing a class *overrides* the pom's `<excludes>`, so discovery does not yet honor excludes.
 
 ## Pipeline (the `Csto2` subcommands)
 
-Each is a method behind the `switch` in `Csto2.main`. Common flags: `--cp` (target test+runtime
-classpath; filtered to existing entries), `--tests <file>` (FQ class names, one per line, `#`
-comments), `--out <dir>`, `--class-timeout-ms`, and the child-JVM controls below.
+Each is a method behind the `switch` in `Csto2.main`. The measuring commands (trace/select/validate/
+pairwise) build their runner via `makeRunner`, which is **Surefire-only** and needs the testorder fork
+(`--surefire-ext`, else auto-located in `~/.m2`) + the agent (auto-located beside `csto2.jar`, or
+`--agent`). Common flags: `--cp` (target classpath; used to infer the module dir), `--tests <file>`,
+`--out <dir>`, `--workdir <module dir>`, `--mvn <bin>`.
 
 1. **`analyze --app <cp> [--lib <cp>] --tests <file> [--out <dir>]`** — static pass → `static-facts.jsonl`
-   + `static-edges.json`. (Uses `--app`/`--lib`, **not** `--cp`.)
-2. **`discover --cp --tests --out`** — runs `TraceRunner --discover` in the target JVM to filter a
-   candidate list down to actually-runnable test classes.
-3. **`trace --cp --tests [--orders N=6] [--seed=1] [--jfr] [--out=.csto2/trace]`** — runs N orders in
-   fresh JVMs → `trace.jsonl` (+ `jfr/` facts when `--jfr`). This is the data the optimizers calibrate on.
+   + `static-edges.json`. (Uses `--app`/`--lib`, **not** `--cp`. In-process WALA, no Surefire.)
+2. **`discover --cp --tests --out`** — runs `TestDiscovery --discover` in the target JVM to filter a
+   candidate list down to actually-runnable test classes (reflection only).
+3. **`trace --cp --tests [--orders N=6] [--seed=1] [--out=.csto2/trace]`** — runs N orders through
+   Surefire+agent → `trace.jsonl` + `jfr/` facts (JFR is always on via the agent). Calibration data.
 4. **`validate --cp --tests --trace <trace.jsonl> [--repeats=5]`** — calibrates the **slope model**
    (`OrderOptimizer`), emits `initial` vs `optimized` (slope-sorted) orders, and measures them
    **interleaved per repeat** (spreads background noise evenly), then reports median speedup.
@@ -171,8 +188,11 @@ and **greenness** (any non-PASS status across runs disqualifies it). Ship rule: 
 
 ## Data artifacts & schemas
 
-- `trace.jsonl` / measure files (`TraceRunner` rows): `orderId, position, test, runtimeMs,
-  classesLoaded, jitMs, gcCount, gcMs, allocBytes, threadDelta, testsFound, failures, status[, error]`.
+- `trace.jsonl` / measure files: `orderId, position, test, runtimeMs, status, failures, testsFound`
+  (from Surefire reports) merged with `classesLoaded, jitMs, gcCount, gcMs, allocBytes, threadDelta`
+  (from the agent, by class name). `SurefireOrchestrator.parseReports` + `mergeAgentFacts`.
+- `agent/<order>.facts.jsonl` (`Csto2Listener` rows): `test, position, agentRuntimeMs, classesLoaded,
+  jitMs, gcCount, gcMs, allocBytes, threadDelta` — the agent's raw per-class output, pre-merge.
 - `jfr/<order>.jfr.jsonl` (`JfrProbe` rows): `orderId, position, test, gcYoung, gcOld, gcPauseMs,
   classLoads, uniqueClassLoads, compilations, allocTop`.
 - `static-facts.jsonl` (`StaticComprehension`): `test, clinitProxy, methodsVisited, staticWrites,
@@ -184,16 +204,20 @@ single **flat** object (it *skips* nested arrays/objects, returning null) — ar
 `staticReads` are re-extracted by substring scanning (`Pairwise.extractArray`). Keep emitted rows flat
 and parseable by these.
 
-## Child-JVM invocation flags (for finicky targets)
+## Invocation flags
 
-Targets often need their JVM tuned to run green; these pass through to the child test JVMs:
+Under the Surefire backend the target's **own** pom drives its JVM config (`argLine`,
+`systemPropertyVariables`, toolchains, etc.) — Surefire applies them, so most per-target JVM tuning is
+no longer csto2's job. Remaining knobs:
 
-- `--jvmargs "<args>"` — extra child JVM args as **one value** (the parser consumes the whole next
-  token even though it starts with `--`). E.g. paimon needs `--add-opens …` plus
-  `-Djava.security.manager=allow`.
-- `--java <JAVA_HOME | /path/to/java>` — pin a JDK (e.g. JDK 17 for targets that reject newer).
-- `--workdir <dir>` — override the inferred child cwd when relative test resource paths fail.
-- `--class-timeout-ms` — per-class wall-clock timeout (orchestrated commands default 30000).
+- `--surefire-ext <jar>` — testorder-fork extension (optional; auto-located in `~/.m2`).
+- `--agent <jar>|none` — instrumentation agent (optional; auto-located beside `csto2.jar`; `none`
+  disables it for runtime+status-only measurement).
+- `--mvn <bin>` — mvn binary/wrapper (default `./mvnw` if present, else `mvn`).
+- `--kp-argline "<args>"` — extra args prepended to the fork's argLine (on top of the agent).
+- `--workdir <dir>` — the Maven **module dir** to run (normally inferred as the parent of
+  `target/test-classes`).
+- `--jvmargs "<args>"` / `--java <home>` — only affect the `discover` helper JVM now, not measurement.
 
 `select` thresholds: `--heavy-alloc-mb` (500), `--cold-slope` (-1.0), `--max-resid` (300),
 `--pair-consumer-mb` (1000), `--pair-producer-mb` (200), `--pair-drop-frac` (0.25), `--jfr-dir`,

@@ -75,11 +75,14 @@ public final class Csto2 {
      * backend has been retired — only its reflection-based discovery survives as {@code TestDiscovery}.
      */
     private static OrderRunner makeRunner(Map<String, String> a, String cp, Path outDir, Path self) throws Exception {
-        if (!a.containsKey("surefire-ext") || req(a, "surefire-ext").isBlank())
-            throw new IllegalArgumentException("Missing --surefire-ext: measurement runs through Maven Surefire "
-                    + "(the testorder fork). Pass the surefire-changing-maven-extension jar.");
+        Path ext = a.containsKey("surefire-ext") && !a.get("surefire-ext").isBlank()
+                ? Paths.get(a.get("surefire-ext")) : defaultSurefireExt();
+        if (ext == null || !Files.exists(ext))
+            throw new IllegalArgumentException("Surefire testorder fork not found in ~/.m2 — build & install it "
+                    + "(`mvn install -DskipTests -Drat.skip -Denforcer.skip` in the maven-surefire fork), or pass "
+                    + "--surefire-ext <surefire-changing-maven-extension jar>.");
+        if (!a.containsKey("surefire-ext")) System.err.println("[csto2] surefire extension (auto): " + ext);
         Path workDir = resolveWorkDir(a, cp);
-        Path ext = Paths.get(a.get("surefire-ext"));
         Path moduleDir = workDir != null ? workDir : Paths.get("").toAbsolutePath();
         SurefireOrchestrator s = new SurefireOrchestrator(moduleDir, outDir, ext, surefireMvnBin(a, moduleDir));
         if (a.containsKey("kp-argline")) s.setKpArgline(a.get("kp-argline"));
@@ -93,6 +96,17 @@ public final class Csto2 {
             System.err.println("[csto2] no instrumentation agent (runtime+status only); build csto2-agent.jar or pass --agent");
         }
         return s;
+    }
+
+    /** Auto-locate the installed testorder-fork extension jar in the local Maven repo (newest). */
+    public static Path defaultSurefireExt() {
+        Path base = Paths.get(System.getProperty("user.home"), ".m2", "repository",
+                "fun", "jvm", "surefire", "flaky", "surefire-changing-maven-extension");
+        if (!Files.isDirectory(base)) return null;
+        try (java.util.stream.Stream<Path> s = Files.walk(base, 2)) {
+            return s.filter(p -> p.getFileName().toString().matches("surefire-changing-maven-extension-.*\\.jar"))
+                    .max(java.util.Comparator.comparing(Path::toString)).orElse(null);
+        } catch (java.io.IOException e) { return null; }
     }
 
     private static String surefireMvnBin(Map<String, String> a, Path dir) {
