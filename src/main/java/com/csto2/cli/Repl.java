@@ -151,9 +151,9 @@ public final class Repl {
         a.put("tests", cfg.get("tests"));
         a.put("out", outDir.toString());
         Csto2.dispatch("trace", a);
-        if (!Files.exists(traceJsonl)) {
+        if (!Files.exists(traceJsonl) || Files.readAllLines(traceJsonl).stream().noneMatch(l -> !l.isBlank())) {
             cfg.remove("trace");
-            System.out.println("[error] trace produced no data — every order's JVM exited non-zero.");
+            System.out.println("[error] trace produced no rows — every order's Surefire run failed (no reports).");
             printFirstLogError(outDir.resolve("logs"));
             throw new IllegalStateException("trace produced no rows (see " + outDir.resolve("logs") + ")");
         }
@@ -430,12 +430,18 @@ public final class Repl {
         try (Stream<Path> s = Files.list(logDir)) {
             Path log = s.filter(p -> p.toString().endsWith(".log")).findFirst().orElse(null);
             if (log == null) return;
+            String firstErr = null;
             for (String line : Files.readAllLines(log)) {
-                if (line.contains("Exception") || line.contains("Error") || line.startsWith("\tat ")) {
-                    System.out.println("   " + log.getFileName() + ": " + line.trim());
-                    return;
+                String t = line.trim();
+                if (t.contains("Caused by:") || t.contains("BUILD FAILURE")
+                        || (t.startsWith("[ERROR]") && t.length() > 8 && !t.contains("\tat "))) {
+                    firstErr = t;
+                    break;
                 }
+                if (firstErr == null && (t.contains("Exception") || t.contains("ClassNotFound")))
+                    firstErr = t;
             }
+            if (firstErr != null) System.out.println("   " + log.getFileName() + ": " + firstErr);
         } catch (IOException ignored) {}
     }
 

@@ -18,6 +18,15 @@ public final class Csto2Agent {
 
     public static void premain(String args, Instrumentation inst) {
         Map<String, String> opts = parse(args);
+        // Our listener implements org.junit.platform.launcher.TestExecutionListener. On JUnit4-only or
+        // TestNG projects that interface is absent, so even *loading* Csto2Listener (to call configure)
+        // would NoClassDefFoundError and abort the whole fork. Guard on it: when the Platform is not
+        // present we no-op, and the run still yields runtime+status from Surefire's own reports.
+        if (!junitPlatformPresent()) {
+            System.err.println("[csto2-agent] JUnit Platform not on classpath (JUnit4/TestNG?); "
+                    + "per-class instrumentation disabled (Surefire reports still give runtime+status)");
+            return;
+        }
         try {
             String self = Csto2Agent.class.getProtectionDomain().getCodeSource().getLocation().toURI().getPath();
             if (self != null && self.endsWith(".jar")) inst.appendToSystemClassLoaderSearch(new JarFile(self));
@@ -26,6 +35,16 @@ public final class Csto2Agent {
         }
         Csto2Listener.configure(opts.get("out"), opts.get("order"), opts.get("jfr"));
         System.err.println("[csto2-agent] active (order=" + opts.get("order") + ")");
+    }
+
+    /** True if the JUnit Platform launcher API is loadable (JUnit 5 or JUnit 4-via-vintage). */
+    private static boolean junitPlatformPresent() {
+        try {
+            Class.forName("org.junit.platform.launcher.TestExecutionListener", false, Csto2Agent.class.getClassLoader());
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     private static Map<String, String> parse(String args) {
