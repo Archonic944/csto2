@@ -411,7 +411,19 @@ public final class Candidates {
                     .add(new String[]{String.valueOf(((Number) r.get("position")).intValue()), (String) r.get("test")});
         }
         if (total.isEmpty()) return new ArrayList<>(fallback);
-        String best = total.entrySet().stream().min(Map.Entry.comparingByValue()).get().getKey();
+        // Only rank runs that actually covered the full suite. A run whose fork crashed early (e.g. an
+        // OOM-killed JVM) records only the classes that completed before the crash, so its summed runtime
+        // is artificially tiny and would otherwise always win -- collapsing "naive" to whatever handful of
+        // classes happened to run before the crash. Require complete coverage before comparing totals.
+        java.util.Set<String> required = new java.util.HashSet<>(fallback);
+        List<String> complete = new ArrayList<>();
+        for (Map.Entry<String, List<String[]>> e : orderRows.entrySet()) {
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            for (String[] a : e.getValue()) seen.add(a[1]);
+            if (seen.containsAll(required)) complete.add(e.getKey());
+        }
+        if (complete.isEmpty()) return new ArrayList<>(fallback); // no run finished the whole suite; don't trust partials
+        String best = complete.stream().min(Comparator.comparingDouble(total::get)).get();
         List<String[]> rows = orderRows.get(best);
         rows.sort(Comparator.comparingInt(a -> Integer.parseInt(a[0])));
         java.util.Set<String> allowed = new java.util.HashSet<>(fallback);
